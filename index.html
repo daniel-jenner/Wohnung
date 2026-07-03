@@ -3,106 +3,247 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Virtuelle 3D Wohnungswelt</title>
+    <title>Virtueller 3D-Wohnungsgrundriss</title>
     <style>
-        body {
-            margin: 0;
-            overflow: hidden;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #111;
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', sans-serif; background-color: #0a0a0f; }
+        canvas { width: 100vw; height: 100vh; display: block; }
+        
+        /* Cinematic UI Overlay */
+        #ui-container { 
+            position: fixed; top: 30px; left: 30px; 
+            background: rgba(10, 10, 15, 0.85); color: #fff; 
+            padding: 20px 25px; border-radius: 14px; 
+            border: 1px solid rgba(255,255,255,0.1); 
+            backdrop-filter: blur(10px); pointer-events: none; z-index: 10; max-width: 320px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.6);
         }
-        canvas {
-            width: 100vw;
-            height: 100vh;
-            display: block;
-        }
-        /* Elegantes Gaming-UI */
-        #ui-container {
-            position: fixed;
-            top: 20px;
-            left: 20px;
-            background: rgba(15, 15, 25, 0.85);
-            color: #fff;
-            padding: 20px;
-            border-radius: 12px;
-            border: 1px solid #334466;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.7);
-            pointer-events: none;
-            z-index: 10;
-            max-width: 320px;
-        }
-        #room-title {
-            font-size: 20px;
-            font-weight: bold;
-            color: #00ddff;
-            margin-bottom: 8px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        #instructions {
-            color: #ccc;
-            font-size: 13px;
-            line-height: 1.5;
-        }
-        /* Fadenkreuz in der Mitte für echtes First-Person-Gefühl */
-        #crosshair {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            width: 10px;
-            height: 10px;
-            transform: translate(-50%, -50%);
-            border: 2px solid rgba(250, 250, 250, 0.5);
-            border-radius: 50%;
-            pointer-events: none;
-            z-index: 5;
-        }
+        #room-title { font-size: 22px; font-weight: 600; color: #ffffff; margin-bottom: 4px; }
+        #room-subtitle { font-size: 12px; color: #00ddff; text-transform: uppercase; font-weight: bold; letter-spacing: 1px; margin-bottom: 12px; }
+        #instructions { color: #a0a5b5; font-size: 13px; line-height: 1.5; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 10px; }
+        
+        /* Minimalistisches Fadenkreuz */
+        #crosshair { position: fixed; top: 50%; left: 50%; width: 6px; height: 6px; transform: translate(-50%, -50%); border: 1.5px solid rgba(255, 255, 255, 0.8); border-radius: 50%; pointer-events: none; z-index: 5; }
+        
+        /* Weicher Blackout-Effekt für Raumsprünge */
+        #fade-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #050508; opacity: 0; pointer-events: none; z-index: 20; transition: opacity 0.5s ease-in-out; }
     </style>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+    <script src="https://unpkg.com/@tweenjs/tween.js@18.6.4/dist/tween.umd.js"></script>
 </head>
 <body>
 
     <div id="crosshair"></div>
-
+    <div id="fade-overlay"></div>
+    
     <div id="ui-container">
-        <div id="room-title">Lade Wohnung...</div>
+        <div id="room-title">Wohnungsgrundriss</div>
+        <div id="room-subtitle">Start im Flur</div>
         <div id="instructions">
-            <strong>Steuerung:</strong><br>
-            • Maus gedrückt halten & bewegen zum Umsehen<br>
-            • Klicke direkt auf eine 3D-Zimmertür, um den Raum zu betreten.
+            • Maus gedrückt halten & bewegen zum Umsehen.<br>
+            • Zielen auf eine Türklinke und Klicken, um den Raum physisch zu betreten.
         </div>
     </div>
 
     <script>
-        let scene, camera, renderer, environmentSphere;
-        let textureLoader;
-        let isUserInteracting = false;
-        let lon = 0, lat = 0;
-        let onPointerDownMouseX = 0, onPointerDownMouseY = 0;
-        let onPointerDownLon = 0, onPointerDownLat = 0;
-        let phi = 0, theta = 0;
+        let scene, camera, renderer, currentRoomMesh, textureLoader;
+        let isUserInteracting = false, lon = 0, lat = 0;
+        let onPointerDownMouseX = 0, onPointerDownMouseY = 0, onPointerDownLon = 0, onPointerDownLat = 0;
+        let phi = 0, theta = 0, raycaster = new THREE.Raycaster(), mouse = new THREE.Vector2();
+        let doors = [], isTransitioning = false;
 
-        let raycaster = new THREE.Raycaster();
-        let mouse = new THREE.Vector2();
-        
-        let doors = [];
-
-        // Die Struktur der Wohnung
+        // Definition des echten Wohnungs-Grundrisses
         const apartment = {
             flur: {
-                name: "Zentraler Flur",
-                image: "flur.jpg",
-                // Wir platzieren echte 3D-Türen (Breite, Höhe, Tiefe, X, Y, Z, Rotation-Y, Zielraum, Tür-Farbe)
+                name: "Zentraler Flur", subtitle: "Eingangsbereich", image: "flur.jpg", isNeutral: false,
                 doors: [
-                    { w: 40, h: 90, d: 5, x: -250, y: -40, z: -150, rotY: Math.PI/4,  target: "zimmer1", color: 0x8b5a2b },
-                    { w: 40, h: 90, d: 5, x: -250, y: -40, z: 150,  rotY: -Math.PI/4, target: "zimmer2", color: 0x8b5a2b },
-                    { w: 40, h: 90, d: 5, x: 250,  y: -40, z: -150, rotY: -Math.PI/4, target: "zimmer3", color: 0x8b5a2b },
-                    { w: 40, h: 90, d: 5, x: 250,  y: -40, z: 150,  rotY: Math.PI/4,  target: "bad",    color: 0x226688 },
-                    { w: 60, h: 95, d: 5, x: 0,    y: -40, z: -300, rotY: 0,          target: "balkon", color: 0xdddddd }
+                    { w: 40, h: 95, x: -180, y: -25, z: -80, rotY: Math.PI/2, target: "zimmer1", label: "ZIMMER 1", color: 0x4a3b32 },
+                    { w: 40, h: 95, x: -180, y: -25, z: 80,  rotY: Math.PI/2, target: "zimmer2", color: 0x4a3b32 },
+                    { w: 40, h: 95, x: 180,  y: -25, z: -80, rotY: -Math.PI/2, target: "zimmer3", color: 0x4a3b32 },
+                    { w: 40, h: 95, x: 180,  y: -25, z: 80,  rotY: -Math.PI/2, target: "bad",    color: 0x2d3a4d },
+                    { w: 65, h: 100, x: 0,   y: -22, z: -190, rotY: 0,         target: "balkon", label: "BALKON", color: 0xcccccc }
                 ]
             },
-            // Die Zimmer selbst haben nur eine Rückgangs-Tür (wird automatisch hinter dem Spieler platziert)
-            zimmer1: { name: "Zimmer 1", image: "zimmer1.jpg", doors: [{ w: 40, h: 90, d: 5, x: 0, y: -40, z: 250, rotY: 0, target: "flur", color: 0x8b5a2b }] },
-            zimmer2: { name: "Zimmer 2", image: "zimmer2.jpg", doors: [{ w: 40, h: 90, d: 5, x: 0, y: -40, z: 250, rotY: 0, target: "flur", color: 0x8b5a2b }] },
-            zimmer3: { name: "Zimmer 3", image: "zimmer3.jpg", doors: [{ w: 40, h: 90, d: 5, x: 0, y: -40, z: 250, rotY: 0, target: "flur", color: 0x8b5a2b }] },
-            bad:     { name: "Badezimmer", image: "bad.jpg",     doors:
+            zimmer1: { name: "Zimmer 1", subtitle: "Wohnbereich", image: "zimmer1.jpg", doors: [{ w: 40, h: 95, x: 0, y: -25, z: 190, rotY: 0, target: "flur", label: "ZURÜCK ZUM FLUR", color: 0x4a3b32 }] },
+            zimmer2: { name: "Zimmer 2", subtitle: "Schlafzimmer", image: "zimmer2.jpg", doors: [{ w: 40, h: 95, x: 0, y: -25, z: 190, rotY: 0, target: "flur", label: "ZURÜCK ZUM FLUR", color: 0x4a3b32 }] },
+            zimmer3: { name: "Zimmer 3", subtitle: "Arbeitszimmer", image: "zimmer3.jpg", doors: [{ w: 40, h: 95, x: 0, y: -25, z: 190, rotY: 0, target: "flur", label: "ZURÜCK ZUM FLUR", color: 0x4a3b32 }] },
+            bad:     { name: "Badezimmer", subtitle: "Wellness & Bad", image: "bad.jpg",     doors: [{ w: 40, h: 95, x: 0, y: -25, z: 190, rotY: 0, target: "flur", label: "ZURÜCK ZUM FLUR", color: 0x2d3a4d }] },
+            balkon:  { name: "Außenbalkon", subtitle: "Freiluftsitz", image: "balkon.jpg",  doors: [{ w: 55, h: 95, x: 0, y: -25, z: 190, rotY: 0, target: "flur", label: "ZURÜCK ZUM FLUR", color: 0xcccccc }] }
+        };
+
+        init();
+        animate();
+
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 1000);
+            textureLoader = new THREE.TextureLoader();
+
+            // Hochwertige, realistische Lichtquellen
+            scene.add(new THREE.AmbientLight(0xfff8f0, 0.8)); // Sanftes Raumlicht
+            const spotLight = new THREE.PointLight(0xffffff, 0.7, 500);
+            spotLight.position.set(0, 160, 0);
+            scene.add(spotLight);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.0;
+            document.body.appendChild(renderer.domElement);
+
+            document.addEventListener('pointerdown', onPointerDown);
+            document.addEventListener('pointermove', onPointerMove);
+            document.addEventListener('pointerup', onPointerUp);
+            document.addEventListener('click', onSceneClick);
+            window.addEventListener('resize', onWindowResize);
+
+            // Initialisiere die Wohnung im Flur (Hier siehst du zuerst die Wände und Türen)
+            goToRoom("flur", true); 
+        }
+
+        function goToRoom(roomId, initLoad = false) {
+            const room = apartment[roomId];
+            if (!room) return;
+
+            document.getElementById('room-title').innerText = room.name;
+            document.getElementById('room-subtitle').innerText = room.subtitle;
+
+            if (currentRoomMesh) scene.remove(currentRoomMesh);
+
+            // ARCHITEKTUR-LOGIK: Wenn wir im Flur starten, laden wir direkt das Flurbild. 
+            // Gehen wir in ein Zimmer, bauen wir erst die Wände und laden DANN das Foto.
+            const geometry = new THREE.BoxGeometry(400, 360, 400);
+            
+            if (roomId === "flur" || !initLoad) {
+                textureLoader.load(room.image, function(texture) {
+                    const materials = Array(6).fill(new THREE.MeshStandardMaterial({ 
+                        map: texture, side: THREE.BackSide, roughness: 0.5, metalness: 0.1 
+                    }));
+                    currentRoomMesh = new THREE.Mesh(geometry, materials);
+                    scene.add(currentRoomMesh);
+                });
+            } else {
+                // Neutraler Raum-Look vor dem Eintreten (Architekten-Grundriss-Stil)
+                const neutralMaterials = [
+                    new THREE.MeshStandardMaterial({ color: 0xdddddd, side: THREE.BackSide }), // Wände
+                    new THREE.MeshStandardMaterial({ color: 0xdddddd, side: THREE.BackSide }),
+                    new THREE.MeshStandardMaterial({ color: 0xeeeeee, side: THREE.BackSide }), // Decke
+                    new THREE.MeshStandardMaterial({ color: 0x554433, side: THREE.BackSide }), // Boden (Holzoptik)
+                    new THREE.MeshStandardMaterial({ color: 0xdddddd, side: THREE.BackSide }),
+                    new THREE.MeshStandardMaterial({ color: 0xdddddd, side: THREE.BackSide })
+                ];
+                currentRoomMesh = new THREE.Mesh(geometry, neutralMaterials);
+                scene.add(currentRoomMesh);
+            }
+
+            // Türen bereinigen
+            doors.forEach(door => scene.remove(door));
+            doors = [];
+
+            // 3D-Türen anhand der Bildvorgaben generieren und beschriften
+            room.doors.forEach(d => {
+                const doorGroup = new THREE.Group();
+                doorGroup.position.set(d.x, d.y, d.z);
+                doorGroup.rotation.y = d.rotY;
+
+                // Massiver Türrahmen
+                const frameMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.8 });
+                const frameL = new THREE.Mesh(new THREE.BoxGeometry(4, d.h + 4, 8), frameMat); frameL.position.set(-d.w/2 - 2, 2, 0);
+                const frameR = frameL.clone(); frameR.position.x = d.w/2 + 2;
+                const frameT = new THREE.Mesh(new THREE.BoxGeometry(d.w + 8, 4, 8), frameMat); frameT.position.set(0, d.h/2 + 2, 0);
+                doorGroup.add(frameL, frameR, frameT);
+
+                // Das bewegliche Türblatt (Drehpunkt links)
+                const doorPivot = new THREE.Group();
+                doorPivot.position.set(-d.w/2, 0, 0);
+                
+                const panel = new THREE.Mesh(
+                    new THREE.BoxGeometry(d.w, d.h, 4), 
+                    new THREE.MeshStandardMaterial({ color: d.color, roughness: 0.6 })
+                );
+                panel.position.set(d.w/2, 0, 0);
+                doorPivot.add(panel);
+
+                // Realistische Chrom-Klinke
+                const handleMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.9, roughness: 0.1 });
+                const handle = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 7, 12), handleMat);
+                handle.rotation.z = Math.PI / 2; handle.position.set(d.w - 6, 0, 3.5);
+                doorPivot.add(handle);
+
+                doorGroup.add(doorPivot);
+
+                // --- TEXT-LABEL GENERIERUNG (Schilder über den Türen) ---
+                if (d.label) {
+                    const canvasLabel = document.createElement('canvas');
+                    const ctx = canvasLabel.getContext('2d');
+                    canvasLabel.width = 256; canvasLabel.height = 64;
+                    ctx.fillStyle = 'rgba(15, 15, 20, 0.85)'; ctx.fillRect(0, 0, 256, 64);
+                    ctx.strokeStyle = '#00ddff'; ctx.lineWidth = 2; ctx.strokeRect(2, 2, 252, 60);
+                    ctx.fillStyle = '#ffffff'; ctx.font = 'bold 24px Arial'; ctx.textAlign = 'center';
+                    ctx.fillText(d.label, 128, 40);
+
+                    const labelTex = new THREE.CanvasTexture(canvasLabel);
+                    const labelMat = new THREE.MeshBasicMaterial({ map: labelTex, transparent: true });
+                    const labelMesh = new THREE.Mesh(new THREE.PlaneGeometry(35, 9), labelMat);
+                    labelMesh.position.set(0, d.h/2 + 15, 2);
+                    doorGroup.add(labelMesh);
+                }
+
+                doorGroup.userData = { targetRoom: d.target, pivot: doorPivot };
+                scene.add(doorGroup);
+                doors.push(doorGroup);
+            });
+        }
+
+        function onSceneClick() {
+            if (isUserInteracting || isTransitioning) return;
+            mouse.x = 0; mouse.y = 0;
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(doors, true);
+            
+            if (intersects.length > 0) {
+                let obj = intersects[0].object;
+                while (obj.parent && !obj.userData.targetRoom) { obj = obj.parent; }
+                if (obj.userData.targetRoom) {
+                    executeTransition(obj);
+                }
+            }
+        }
+
+        // --- REALISTISCHE TRANSITIONS-FAHRT ---
+        function executeTransition(doorObject) {
+            isTransitioning = true;
+            const targetRoom = doorObject.userData.targetRoom;
+            const pivot = doorObject.userData.pivot;
+            const fadeOverlay = document.getElementById('fade-overlay');
+
+            // 1. Die Tür schwingt edel nach innen auf
+            new TWEEN.Tween(pivot.rotation).to({ y: -Math.PI / 2 }, 800).easing(TWEEN.Easing.Quadratic.Out).start();
+            
+            // 2. Die First-Person-Kamera läuft sanft nach vorne durch den Rahmen
+            new TWEEN.Tween(camera.position).to({ z: camera.position.z - 50 }, 750).easing(TWEEN.Easing.Cubic.In).start();
+
+            // 3. Weicher Cinematic-Fade ins Schwarze, genau beim Durchschreiten
+            setTimeout(() => { fadeOverlay.style.opacity = 1; }, 350);
+
+            // 4. Im Hintergrund wird das Zimmer geladen und das Bild an die Wände geheftet
+            setTimeout(() => {
+                camera.position.set(0, 0, 0);
+                goToRoom(targetRoom, false); // Falsch setzt "isNeutral" außer Kraft -> Bild lädt jetzt!
+                
+                setTimeout(() => {
+                    fadeOverlay.style.opacity = 0;
+                    isTransitioning = false;
+                }, 200);
+            }, 800);
+        }
+
+        function onPointerDown(event) { if (isTransitioning) return; isUserInteracting = true; onPointerDownMouseX = event.clientX; onPointerDownMouseY = event.clientY; onPointerDownLon = lon; onPointerDownLat = lat; }
+        function onPointerMove(event) { if (isUserInteracting && !isTransitioning) { lon = (onPointerDownMouseX - event.clientX) * 0.12 + onPointerDownLon; lat = (event.clientY - onPointerDownMouseY) * 0.12 + onPointerDownLat; } }
+        function onPointerUp() { isUserInteracting = false; }
+        function onWindowResize() { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); }
+        function animate(time) { requestAnimationFrame(animate); TWEEN.update(time); update(); }
+        function update() { lat = Math.max(-80, Math.min(80, lat)); phi = THREE.MathUtils.degToRad(90 - lat); theta = THREE.MathUtils.degToRad(lon); camera.lookAt(500 * Math.sin(phi) * Math.cos(theta), 500 * Math.cos(phi), 500 * Math.sin(phi) * Math.sin(theta)); renderer.render(scene, camera); }
+    </script>
+</body>
+</html>
